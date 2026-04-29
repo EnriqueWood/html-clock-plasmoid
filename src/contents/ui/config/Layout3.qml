@@ -7,6 +7,7 @@
  * @link      https://github.com/MarcinOrlowski/html-clock-plasmoid
  */
 
+import QtCore
 import QtQuick
 import QtQuick.Controls as QtControls
 import QtQuick.Layouts
@@ -113,6 +114,68 @@ ColumnLayout {
 		onTriggered: randomIndex++
 	}
 
+	// Dedicated 16ms tick for {*-flip} animation redraws (60fps).
+	// Only bumps flipFrameTick when something visible would change, so the
+	// preview text binding doesn't re-run during the rest portion of the
+	// tick window.
+	property int flipFrameTick: 0
+	property string lastFingerprint: ""
+	readonly property int flipFrameAnimMs: 400
+	readonly property int flipFrameCount: 25
+	function computeFlipFrame(msUntilTick) {
+		if (msUntilTick > flipFrameAnimMs || msUntilTick <= 0) return 0
+		var animElapsed = flipFrameAnimMs - msUntilTick
+		var idx = Math.floor(animElapsed * flipFrameCount / flipFrameAnimMs) + 1
+		return Math.min(flipFrameCount, idx)
+	}
+	function pad2(n) { return n < 10 ? "0" + n : "" + n }
+	function pad4(n) {
+		if (n < 10) return "000" + n
+		if (n < 100) return "00" + n
+		if (n < 1000) return "0" + n
+		return "" + n
+	}
+	function digitFlip(currChar, nextChar, msUntilTick) {
+		if (currChar === nextChar) return 0
+		return computeFlipFrame(msUntilTick)
+	}
+
+	readonly property string homeDir: {
+		var url = StandardPaths.writableLocation(StandardPaths.HomeLocation).toString()
+		return url.indexOf("file://") === 0 ? url.substring(7) : url
+	}
+	Timer {
+		interval: 16
+		running: layoutConfigContainer.visible
+		repeat: true
+		onTriggered: {
+			var now = new Date()
+			var ms = now.getMilliseconds()
+			var sec = now.getSeconds()
+			var min = now.getMinutes()
+			var hour = now.getHours()
+			var day = now.getDate()
+			var month = now.getMonth()
+			var year = now.getFullYear()
+			var msToNextSec = 1000 - ms
+			var msToNextMin = (59 - sec) * 1000 + msToNextSec
+			var msToNextHour = (59 - min) * 60000 + msToNextMin
+			var msToNextDay = new Date(year, month, day + 1).getTime() - now.getTime()
+			var msToNextMonth = new Date(year, month + 1, 1).getTime() - now.getTime()
+			var msToNextYear = new Date(year + 1, 0, 1).getTime() - now.getTime()
+			var fp = sec + "," + min + "," + hour + "," + day + "," + month + "," + year
+				+ "," + computeFlipFrame(msToNextSec)
+				+ "," + computeFlipFrame(msToNextMin)
+				+ "," + computeFlipFrame(msToNextHour)
+				+ "," + computeFlipFrame(msToNextDay)
+				+ "," + computeFlipFrame(msToNextMonth)
+				+ "," + computeFlipFrame(msToNextYear)
+			if (fp === lastFingerprint) return
+			lastFingerprint = fp
+			flipFrameTick++
+		}
+	}
+
 	// Process {flip|X|Y} placeholders - flip is cycle with 2 values
 	function handleFlip(text) {
 		// Support both | (new) and : (legacy) separators
@@ -129,6 +192,76 @@ ColumnLayout {
 				})
 			}
 		})
+		return text
+	}
+
+	function handleFlipFrame(text) {
+		var hasFlip = text.indexOf("-flip}") !== -1
+		var hasDigit = /\{[hismdy][1-4]\}/.test(text)
+		if (!hasFlip && !hasDigit) return text
+
+		var now = new Date()
+		var ms = now.getMilliseconds()
+		var sec = now.getSeconds()
+		var min = now.getMinutes()
+		var hour = now.getHours()
+		var day = now.getDate()
+		var month = now.getMonth()
+		var year = now.getFullYear()
+
+		var msToNextSec = 1000 - ms
+		var msToNextMin = (59 - sec) * 1000 + msToNextSec
+		var msToNextHour = (59 - min) * 60000 + msToNextMin
+		var tomorrow = new Date(year, month, day + 1)
+		var msToNextDay = tomorrow.getTime() - now.getTime()
+		var firstOfNextMonth = new Date(year, month + 1, 1)
+		var msToNextMonth = firstOfNextMonth.getTime() - now.getTime()
+		var firstOfNextYear = new Date(year + 1, 0, 1)
+		var msToNextYear = firstOfNextYear.getTime() - now.getTime()
+
+		var hh = pad2(hour),  nextHH = pad2((hour + 1) % 24)
+		var ii = pad2(min),   nextII = pad2((min + 1) % 60)
+		var ss = pad2(sec),   nextSS = pad2((sec + 1) % 60)
+		var dd = pad2(day),   nextDD = pad2(tomorrow.getDate())
+		var mm = pad2(month + 1), nextMM = pad2(firstOfNextMonth.getMonth() + 1)
+		var yyyy = pad4(year), nextYYYY = pad4(year + 1)
+
+		text = text.replace(/\{hh-flip\}/g, computeFlipFrame(msToNextHour))
+		text = text.replace(/\{ii-flip\}/g, computeFlipFrame(msToNextMin))
+		text = text.replace(/\{ss-flip\}/g, computeFlipFrame(msToNextSec))
+		text = text.replace(/\{dd-flip\}/g, computeFlipFrame(msToNextDay))
+		text = text.replace(/\{mm-flip\}/g, computeFlipFrame(msToNextMonth))
+		text = text.replace(/\{yyyy-flip\}/g, computeFlipFrame(msToNextYear))
+
+		text = text.replace(/\{h1-flip\}/g, digitFlip(hh.charAt(0), nextHH.charAt(0), msToNextHour))
+		text = text.replace(/\{h2-flip\}/g, digitFlip(hh.charAt(1), nextHH.charAt(1), msToNextHour))
+		text = text.replace(/\{i1-flip\}/g, digitFlip(ii.charAt(0), nextII.charAt(0), msToNextMin))
+		text = text.replace(/\{i2-flip\}/g, digitFlip(ii.charAt(1), nextII.charAt(1), msToNextMin))
+		text = text.replace(/\{s1-flip\}/g, digitFlip(ss.charAt(0), nextSS.charAt(0), msToNextSec))
+		text = text.replace(/\{s2-flip\}/g, digitFlip(ss.charAt(1), nextSS.charAt(1), msToNextSec))
+		text = text.replace(/\{d1-flip\}/g, digitFlip(dd.charAt(0), nextDD.charAt(0), msToNextDay))
+		text = text.replace(/\{d2-flip\}/g, digitFlip(dd.charAt(1), nextDD.charAt(1), msToNextDay))
+		text = text.replace(/\{m1-flip\}/g, digitFlip(mm.charAt(0), nextMM.charAt(0), msToNextMonth))
+		text = text.replace(/\{m2-flip\}/g, digitFlip(mm.charAt(1), nextMM.charAt(1), msToNextMonth))
+		text = text.replace(/\{y1-flip\}/g, digitFlip(yyyy.charAt(0), nextYYYY.charAt(0), msToNextYear))
+		text = text.replace(/\{y2-flip\}/g, digitFlip(yyyy.charAt(1), nextYYYY.charAt(1), msToNextYear))
+		text = text.replace(/\{y3-flip\}/g, digitFlip(yyyy.charAt(2), nextYYYY.charAt(2), msToNextYear))
+		text = text.replace(/\{y4-flip\}/g, digitFlip(yyyy.charAt(3), nextYYYY.charAt(3), msToNextYear))
+
+		text = text.replace(/\{h1\}/g, hh.charAt(0))
+		text = text.replace(/\{h2\}/g, hh.charAt(1))
+		text = text.replace(/\{i1\}/g, ii.charAt(0))
+		text = text.replace(/\{i2\}/g, ii.charAt(1))
+		text = text.replace(/\{s1\}/g, ss.charAt(0))
+		text = text.replace(/\{s2\}/g, ss.charAt(1))
+		text = text.replace(/\{d1\}/g, dd.charAt(0))
+		text = text.replace(/\{d2\}/g, dd.charAt(1))
+		text = text.replace(/\{m1\}/g, mm.charAt(0))
+		text = text.replace(/\{m2\}/g, mm.charAt(1))
+		text = text.replace(/\{y1\}/g, yyyy.charAt(0))
+		text = text.replace(/\{y2\}/g, yyyy.charAt(1))
+		text = text.replace(/\{y3\}/g, yyyy.charAt(2))
+		text = text.replace(/\{y4\}/g, yyyy.charAt(3))
 		return text
 	}
 
@@ -415,12 +548,14 @@ ColumnLayout {
 				font.italic: useCustomFont ? customFont.italic : Qt.application.font.italic
 				font.underline: useCustomFont ? customFont.underline : Qt.application.font.underline
 				text: {
-					cycleIndex // Force re-evaluation on timer tick
+					cycleIndex // Force re-evaluation on cycle timer tick
+					flipFrameTick // Force re-evaluation on flip frame timer tick
 					if (layoutTextArea.text === '') return ''
-					var txt = layoutTextArea.text
+					var txt = layoutTextArea.text.replace(/\{home\}/g, homeDir)
 					txt = handleFlip(txt)
 					txt = handleCycle(txt)
 					txt = handleRandom(txt)
+					txt = handleFlipFrame(txt)
 					return DTF.format(txt, '', null)
 				}
 			}
